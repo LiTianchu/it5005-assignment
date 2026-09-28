@@ -1,6 +1,5 @@
 """Streamlit interface for the assignment's Sudoku reasoners."""
 
-from collections import defaultdict, deque
 from html import escape
 import json
 from pathlib import Path
@@ -8,10 +7,9 @@ from time import perf_counter
 
 import streamlit as st
 
-from logic_ import parse_definite_clause
-from original.sudoku_solver import (
+from sudoku_solver import (
     atom, build_definite_kb, build_general_kb, solve_full_grid_fc,
-    solve_full_grid_bc, pl_bc_entails,
+    solve_full_grid_bc, pl_bc_entails, fc_infer, proof_steps,
 )
 
 
@@ -72,58 +70,53 @@ def describe_rule(premises, conclusion):
     return f"Infer {name}."
 
 
-def proof_steps(kb, query):
-    """Record forward rule firings and retain the steps needed for this query."""
-    facts, origins, agenda = set(), {}, deque()
-    rules, waiting, remaining = [], defaultdict(list), []
-    for clause in kb.clauses:
-        premises, conclusion = parse_definite_clause(clause)
-        premises = tuple(dict.fromkeys(premises))
-        if not premises:
-            if conclusion not in facts:
-                facts.add(conclusion)
-                origins[conclusion] = ((), conclusion)
-                agenda.append(conclusion)
-            continue
-        index = len(rules)
-        rules.append((premises, conclusion))
-        remaining.append(len(premises))
-        for premise in premises:
-            waiting[premise].append(index)
+def describe_fact(fact):
+    """Render a Sudoku proposition as a sentence for a supporting step."""
+    excluded = fact.op.startswith("Not")
+    r, c, v = map(int, fact.op[3 if excluded else 2:].split("_"))
+    verb = "cannot contain" if excluded else "contains"
+    return f"Row {r}, column {c} {verb} {v}."
 
-    while agenda and query not in facts:
-        fact = agenda.popleft()
-        for index in waiting[fact]:
-            remaining[index] -= 1
-            if remaining[index] == 0:
-                premises, conclusion = rules[index]
-                if conclusion not in facts:
-                    facts.add(conclusion)
-                    origins[conclusion] = (premises, conclusion)
-                    agenda.append(conclusion)
-    if query not in facts:
-        return []
 
-    steps, seen = [], set()
-
-    def collect(fact):
-        if fact in seen:
-            return
-        seen.add(fact)
-        premises, conclusion = origins[fact]
-        for premise in premises:
-            collect(premise)
-        steps.append(describe_rule(premises, conclusion))
-
-    collect(query)
-    return steps
+def show_proof_steps(steps):
+    """Display recorded deductions as cards with links by step number."""
+    st.markdown("**Forward-chaining reasoning trace**")
+    if not steps:
+        st.info("The given clues and elimination rules do not prove this value.")
+        return
+    st.caption(
+        f"{len(steps)} steps supporting this answer, in deduction order. "
+        "Expand a card to see why it follows and which earlier steps it uses."
+    )
+    for index, step in enumerate(steps, start=1):
+        premises, conclusion = step['premises'], step['conclusion']
+        excluded = conclusion.op.startswith("Not")
+        r, c, v = map(int, conclusion.op[3 if excluded else 2:].split("_"))
+        if excluded:
+            action = f"Eliminate {v} from R{r}C{c}"
+        elif premises:
+            action = f"Place {v} at R{r}C{c}"
+        else:
+            action = f"Given: R{r}C{c} = {v}"
+        with st.expander(f"Step {index} · {action}", expanded=index == len(steps)):
+            st.write(describe_rule(premises, conclusion))
+            if premises:
+                st.markdown("**Based on earlier steps**")
+                for number, premise in zip(step['depends_on'], premises):
+                    st.markdown(f"- **Step {number}:** {describe_fact(premise)}")
+            else:
+                st.caption("Starting fact: supplied by the puzzle.")
+            if index == len(steps):
+                st.success("This establishes the queried value.")
 
 
 st.set_page_config(page_title="Sudoku Solver", layout="centered")
 st.markdown(
     """<style>
-    .sudoku-board { border-collapse: collapse; margin: 1rem auto; }
-    .sudoku-board td { width: 2.6rem; height: 2.6rem; text-align: center;
+    .sudoku-board { border-collapse: collapse; table-layout: fixed;
+        width: 100%; max-width: 26rem; margin: 1rem auto; }
+    .sudoku-board td { height: clamp(1.7rem, 6vw, 2.6rem); padding: 0;
+        text-align: center; vertical-align: middle;
         border: 1px solid #94a3b8; font-size: 1.2rem; }
     .sudoku-board .given { font-weight: 800; background: #e2e8f0; color: #0f172a; }
     .sudoku-board .inferred { font-weight: 600; color: #1d4ed8; background: #eff6ff; }
@@ -181,13 +174,13 @@ with columns[2]:
     value = st.number_input("Value", min_value=1, max_value=n, value=1, step=1)
 tutor_mode = st.checkbox("Show reasoning trace (tutor mode)", value=True)
 if tutor_mode:
-    st.caption("The tutor trace follows forward-chaining rules; the verdict uses backward chaining.")
+    st.caption("Forward chaining starts from the clues and explains each elimination leading to the answer.")
 if st.button("Check entailment"):
     try:
         with st.spinner("Checking the query..."):
             kb = build_definite_kb(n, box_h, box_w, givens)
             query = atom("Is", int(row), int(column), int(value))
-            verdict = pl_bc_entails(kb, query)
+            verdict = query in fc_infer(kb)
             steps = proof_steps(kb, query) if tutor_mode and verdict else []
     except (ValueError, RecursionError) as exc:
         st.session_state.pop("query_result", None)
@@ -197,14 +190,9 @@ if st.button("Check entailment"):
             puzzle_index, int(row), int(column), int(value), verdict, steps, tutor_mode
         )
 result = st.session_state.get("query_result")
-if result and result[:4] == (puzzle_index, int(row), int(column), int(value)):
+if (result and result[:4] == (puzzle_index, int(row), int(column), int(value))
+        and result[6] == tutor_mode):
     _, qr, qc, qv, verdict, steps, traced = result
     st.write(f"Is row {qr}, column {qc} equal to {qv}? **{verdict}**")
     if traced:
-        st.markdown("**Reasoning trace**")
-        if steps:
-            for index, step in enumerate(steps, start=1):
-                with st.expander(f"Step {index}", expanded=index == len(steps)):
-                    st.write(step)
-        else:
-            st.write("The given clues and elimination rules do not prove this value.")
+        show_proof_steps(steps)

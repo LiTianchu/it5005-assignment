@@ -142,14 +142,18 @@ def fc_infer(kb):
     count = []
     used_in = defaultdict(list) # premise -> indices of rules using it
     agenda = deque()
+    premises_of = []
+    origins = {}
 
     for i, clause in enumerate(kb.clauses):
         premises, conclusion = parse_definite_clause(clause)
+        premises_of.append(tuple(dict.fromkeys(premises)))
         premises = set(premises) # avoid double counting repeated premises
         conclusion_of.append(conclusion)
         count.append(len(premises))
         if not premises: # fact
             agenda.append(conclusion)
+            origins.setdefault(conclusion, ())
         for p in premises:
             used_in[p].append(i)
 
@@ -162,8 +166,47 @@ def fc_infer(kb):
         for i in used_in[p]:
             count[i] -= 1
             if count[i] == 0: # all premises now known, add to agenda
+                origins.setdefault(conclusion_of[i], premises_of[i])
                 agenda.append(conclusion_of[i])
+    kb._fc_trace = (tuple(kb.clauses), origins)
     return inferred
+
+
+def proof_steps(kb, query):
+    """Return relevant recorded FC deductions in their actual firing order.
+
+    Each step contains its conclusion, premises, and the one-based numbers
+    of the earlier steps supplying those premises. Reuse a previous FC pass
+    when the KB is unchanged; return no proof for an unprovable query.
+    """
+    trace = getattr(kb, '_fc_trace', None)
+    if trace is None or trace[0] != tuple(kb.clauses):
+        fc_infer(kb)
+        trace = kb._fc_trace
+    origins = trace[1]
+    if query not in origins:
+        return []
+
+    needed = set()
+
+    def collect(fact):
+        if fact in needed:
+            return
+        needed.add(fact)
+        for premise in origins[fact]:
+            collect(premise)
+
+    collect(query)
+    steps, numbers = [], {}
+    for conclusion, premises in origins.items():
+        if conclusion in needed:
+            steps.append({
+                'conclusion': conclusion,
+                'premises': premises,
+                'depends_on': tuple(numbers[p] for p in premises),
+            })
+            numbers[conclusion] = len(steps)
+    return steps
 
 
 def solve_full_grid_fc(n, box_h, box_w, givens):
