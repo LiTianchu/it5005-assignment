@@ -1,15 +1,11 @@
+"""IT5005 Assignment 1: student implementation file.
 
-"""IT5005: knowledge-base contribution (Q1 and Q4).
-
-The two builders are complete. FC/BC solver stubs are deliberately reserved
-for the other group member. Only the supplied logic and utility modules are
-imported; neither support file nor atom() is modified.
+Implement the functions marked below. Do not modify utils.py or logic_.py.
 """
-
 from utils import collections
 from utils import *
 from logic_ import *
-
+from collections import defaultdict, deque
 
 # Do not change this function; it is used to create atomic propositions.
 def atom(prefix, r, c, v):
@@ -140,33 +136,52 @@ def build_definite_kb(n, box_h, box_w, givens):
                         kb.tell(is_value[r, c, v])
     return kb
 
+def fc_infer(kb):
+    """Return the set of all atoms entailed by a definite clause KB."""
+    conclusion_of = []
+    count = []
+    used_in = defaultdict(list) # premise -> indices of rules using it
+    agenda = deque()
+
+    for i, clause in enumerate(kb.clauses):
+        premises, conclusion = parse_definite_clause(clause)
+        premises = set(premises) # avoid double counting repeated premises
+        conclusion_of.append(conclusion)
+        count.append(len(premises))
+        if not premises: # fact
+            agenda.append(conclusion)
+        for p in premises:
+            used_in[p].append(i)
+
+    inferred = set()
+    while agenda:
+        p = agenda.popleft()
+        if p in inferred:
+            continue
+        inferred.add(p)
+        for i in used_in[p]:
+            count[i] -= 1
+            if count[i] == 0: # all premises now known, add to agenda
+                agenda.append(conclusion_of[i])
+    return inferred
+
 
 def solve_full_grid_fc(n, box_h, box_w, givens):
-    """Solve the whole puzzle using build_definite_kb + pl_fc_entails.
-
-    Returns
-    -------
-    dict[(int, int), int] -- {(row, col): value} for every cell
-    """
     kb = build_definite_kb(n, box_h, box_w, givens)
+    inferred = fc_infer(kb) # forward chaining pass over the KB
     solution = {}
 
     for r in range(1, n + 1):
         for c in range(1, n + 1):
-            matches = [
-                v for v in range(1, n + 1)
-                if pl_fc_entails(kb, atom('Is', r, c, v))
-            ]
-
-            if len(matches) != 1:
-                raise ValueError(
-                    f'Could not derive exactly one value for cell {(r, c)}.'
-                )
-
+            matches = [v for v in range(1, n + 1)
+                       if atom('Is', r, c, v) in inferred]
+            if not matches:
+                raise ValueError(f'No value derived for cell {(r, c)}.')
+            if len(matches) > 1:
+                raise ValueError(f'Multiple values derived for cell {(r, c)}: {matches}.')
             solution[(r, c)] = matches[0]
 
     return solution
-
 
 def pl_bc_entails(kb, query):
     """Your own backward-chaining implementation.
@@ -181,40 +196,58 @@ def pl_bc_entails(kb, query):
     bool
     """
 
-    from collections import defaultdict
     clauses = tuple(kb.clauses)
     # create a cache that can be shared across multiple calls
-    cache = getattr(kb, '_bc_cache', None)
+    cache = getattr(kb, '_bc_table', None)
     if cache is None or cache[0] != clauses:
-        rules = defaultdict(list)
-        proven = set() # cache of goals already shown true (memoization)
+        rules = collections.defaultdict(list)
+        answers = {}
         for clause in clauses:
             premises, conclusion = parse_definite_clause(clause)
-            rules[conclusion].append(premises)
-            if not premises:
-                proven.add(conclusion)
-        cache = (clauses, rules, proven)
-        kb._bc_cache = cache
-    _, rules, proven = cache
+            if premises:
+                rules[conclusion].append(tuple(dict.fromkeys(premises)))
+            else:
+                # Since all([]) returns True, facts with no premises are automatically proven
+                answers[conclusion] = True
+        cache = (clauses, rules, answers)
+        kb._bc_table = cache
+    _, rules, answers = cache
+    if query in answers:
+        return answers[query]
 
-    def prove(goal, path):
-        if goal in proven: # early exit if already proven
-            return True
+    def prove(goal):
+        if goal in answers: # early exit if already proven
+            return answers[goal]
         if goal in path: # cycle
+            return False
+        if goal in failed:
             return False
 
         path.add(goal)
         try:
             for premises in rules.get(goal, ()):
-                # Since all([]) returns True, facts with no premises are automatically proven
-                if all(prove(p, path) for p in premises):
-                    proven.add(goal)
+                for premise in premises:
+                    if not prove(premise):
+                        break
+                else:
+                    answers[goal] = True # cache of goals already shown true (memoization)
                     return True
+            failed.add(goal)
             return False
         finally:
             path.remove(goal) # backtrack
 
-    return prove(query, set())
+    while True:
+        before = len(answers)
+        path = set()
+        failed = set()
+        if prove(query):
+            return True
+
+        if len(answers) == before:
+            for goal in failed:
+                answers[goal] = False
+            return False
 
 
 def solve_full_grid_bc(n, box_h, box_w, givens):
