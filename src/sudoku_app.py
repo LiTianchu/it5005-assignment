@@ -9,7 +9,7 @@ from time import perf_counter
 import streamlit as st
 
 from logic_ import parse_definite_clause
-from sudoku_solver import (
+from original.sudoku_solver import (
     atom, build_definite_kb, build_general_kb, solve_full_grid_fc,
     solve_full_grid_bc, pl_bc_entails,
 )

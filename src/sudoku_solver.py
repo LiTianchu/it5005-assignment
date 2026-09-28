@@ -108,7 +108,7 @@ def build_definite_kb(n, box_h, box_w, givens):
     PropDefiniteKB
     """
     _validate_inputs(n, box_h, box_w, givens)
-    kb = _IndexedDefiniteKB()
+    kb = PropDefiniteKB()
     values = range(1, n + 1)
     is_value = {(r, c, v): atom('Is', r, c, v)
                 for r in values for c in values for v in values}
@@ -181,24 +181,38 @@ def pl_bc_entails(kb, query):
     bool
     """
 
+    from collections import defaultdict
+    clauses = tuple(kb.clauses)
+    # create a cache that can be shared across multiple calls
+    cache = getattr(kb, '_bc_cache', None)
+    if cache is None or cache[0] != clauses:
+        rules = defaultdict(list)
+        proven = set() # cache of goals already shown true (memoization)
+        for clause in clauses:
+            premises, conclusion = parse_definite_clause(clause)
+            rules[conclusion].append(premises)
+            if not premises:
+                proven.add(conclusion)
+        cache = (clauses, rules, proven)
+        kb._bc_cache = cache
+    _, rules, proven = cache
+
     def prove(goal, path):
-        # Prevent an infinite recursion if the proof encounters a cycle.
-        if goal in path:
+        if goal in proven: # early exit if already proven
+            return True
+        if goal in path: # cycle
             return False
 
-        next_path = path | {goal}
-
-        # Look for any clause capable of proving this goal.
-        for clause in kb.clauses:
-            premises, conclusion = parse_definite_clause(clause)
-
-            if conclusion == goal:
-                # A fact has no premises, so all([]) is True.
-                if all(prove(premise, next_path)
-                    for premise in premises):
+        path.add(goal)
+        try:
+            for premises in rules.get(goal, ()):
+                # Since all([]) returns True, facts with no premises are automatically proven
+                if all(prove(p, path) for p in premises):
+                    proven.add(goal)
                     return True
-
-        return False
+            return False
+        finally:
+            path.remove(goal) # backtrack
 
     return prove(query, set())
 
