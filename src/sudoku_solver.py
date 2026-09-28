@@ -6,6 +6,7 @@ for the other group member. Only the supplied logic and utility modules are
 imported; neither support file nor atom() is modified.
 """
 
+from utils import collections
 from utils import *
 from logic_ import *
 
@@ -71,17 +72,23 @@ def build_general_kb(n, box_h, box_w, givens):
                for r in values for c in values for v in values}
     for r in values:
         for c in values:
-            # At least one value, then at most one value per cell.
+            # At least one value.
             kb.tell(associate('|', [symbols[r, c, v] for v in values]))
+
             for v in values:
                 for w in range(v + 1, n + 1):
+                    # ~symbols[r, c, v] | ~symbols[r, c, w] is false when both symbols[r, c, v] and symbols[r, c, w] are true.
+                    # Adding this on every pair of distinct values restricts the cell to have at most one value.
                     kb.tell(~symbols[r, c, v] | ~symbols[r, c, w])
-            # Peer pairs are unordered: emit each exclusion only once,
-            # even if the cells share both a row/column and a box.
+
+            # Add exclusion clauses for all peers of the current cell.
             for rr, cc in _peers(n, box_h, box_w, r, c):
-                if (r, c) < (rr, cc):
+                if (r, c) < (rr, cc): # prevent duplication of exclusion clauses
                     for v in values:
+                        # ~symbols[r, c, v] | ~symbols[rr, cc, v] is false when both symbols[r, c, v] and symbols[rr, cc, v] are true.
+                        # This clause ensures that no two peers can have the same value.
                         kb.tell(~symbols[r, c, v] | ~symbols[rr, cc, v])
+
     for (r, c), v in sorted(givens.items()):
         kb.tell(symbols[r, c, v])
     return kb
@@ -101,27 +108,31 @@ def build_definite_kb(n, box_h, box_w, givens):
     PropDefiniteKB
     """
     _validate_inputs(n, box_h, box_w, givens)
-    kb = PropDefiniteKB()
+    kb = _IndexedDefiniteKB()
     values = range(1, n + 1)
     is_value = {(r, c, v): atom('Is', r, c, v)
                 for r in values for c in values for v in values}
     not_value = {(r, c, v): atom('Not', r, c, v)
                  for r in values for c in values for v in values}
+    # Encode the given cells as definite facts in the knowledge base.
     for (r, c), v in sorted(givens.items()):
         kb.tell(is_value[r, c, v])
+
     for r in values:
         for c in values:
             peers = _peers(n, box_h, box_w, r, c)
             for v in values:
                 # Not... is a positive atom representing an established
-                # elimination, not Python 'not' or a negated Is literal.
                 for w in values:
                     if w != v:
+                        # Eliminate w as a possible value for this cell if v is known.
                         kb.tell(Expr('==>', is_value[r, c, v], not_value[r, c, w]))
                 for rr, cc in peers:
+                    # Eliminate v as a possible value for each peer if v is known for this cell.
                     kb.tell(Expr('==>', is_value[r, c, v], not_value[rr, cc, v]))
                 eliminated = [not_value[r, c, w] for w in values if w != v]
                 if eliminated:
+                    # If all other values have been eliminated, then v must be the value for this cell.
                     kb.tell(Expr('==>', associate('&', eliminated), is_value[r, c, v]))
                 else:
                     # The 1x1 case has only one possible value, unconditionally.
@@ -169,8 +180,6 @@ def pl_bc_entails(kb, query):
     -------
     bool
     """
-    if not isinstance(kb, PropDefiniteKB):
-        raise ValueError('kb must be a PropDefiniteKB.')
 
     def prove(goal, path):
         # Prevent an infinite recursion if the proof encounters a cycle.
@@ -186,7 +195,7 @@ def pl_bc_entails(kb, query):
             if conclusion == goal:
                 # A fact has no premises, so all([]) is True.
                 if all(prove(premise, next_path)
-                       for premise in premises):
+                    for premise in premises):
                     return True
 
         return False
