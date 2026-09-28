@@ -137,9 +137,24 @@ def solve_full_grid_fc(n, box_h, box_w, givens):
     -------
     dict[(int, int), int] -- {(row, col): value} for every cell
     """
-    raise NotImplementedError(
-        'solve_full_grid_fc: solve every cell with forward chaining'
-    )
+    kb = build_definite_kb(n, box_h, box_w, givens)
+    solution = {}
+
+    for r in range(1, n + 1):
+        for c in range(1, n + 1):
+            matches = [
+                v for v in range(1, n + 1)
+                if pl_fc_entails(kb, atom('Is', r, c, v))
+            ]
+
+            if len(matches) != 1:
+                raise ValueError(
+                    f'Could not derive exactly one value for cell {(r, c)}.'
+                )
+
+            solution[(r, c)] = matches[0]
+
+    return solution
 
 
 def pl_bc_entails(kb, query):
@@ -154,9 +169,29 @@ def pl_bc_entails(kb, query):
     -------
     bool
     """
-    raise NotImplementedError(
-        'pl_bc_entails: implement backward chaining, soundly'
-    )
+    if not isinstance(kb, PropDefiniteKB):
+        raise ValueError('kb must be a PropDefiniteKB.')
+
+    def prove(goal, path):
+        # Prevent an infinite recursion if the proof encounters a cycle.
+        if goal in path:
+            return False
+
+        next_path = path | {goal}
+
+        # Look for any clause capable of proving this goal.
+        for clause in kb.clauses:
+            premises, conclusion = parse_definite_clause(clause)
+
+            if conclusion == goal:
+                # A fact has no premises, so all([]) is True.
+                if all(prove(premise, next_path)
+                       for premise in premises):
+                    return True
+
+        return False
+
+    return prove(query, set())
 
 
 def solve_full_grid_bc(n, box_h, box_w, givens):
@@ -170,6 +205,21 @@ def solve_full_grid_bc(n, box_h, box_w, givens):
     -------
     dict[(int, int), int] -- {(row, col): value} for every cell
     """
-    raise NotImplementedError(
-        'solve_full_grid_bc: solve every cell with backward chaining'
-    )
+    kb = build_definite_kb(n, box_h, box_w, givens)
+    solution = {}
+
+    for r in range(1, n + 1):
+        for c in range(1, n + 1):
+            matches = [
+                v for v in range(1, n + 1)
+                if pl_bc_entails(kb, atom('Is', r, c, v))
+            ]
+
+            if len(matches) != 1:
+                raise ValueError(
+                    f'Could not derive exactly one value for cell {(r, c)}.'
+                )
+
+            solution[(r, c)] = matches[0]
+
+    return solution
